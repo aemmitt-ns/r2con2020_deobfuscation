@@ -10,6 +10,9 @@ blocks = esilsolver.r2pipe.cmdj("afbj")
 block_dict = dict([(b["addr"], b) for b in blocks])
 block_list = blocks[:1] # just get first block now
 completed_blocks = {}
+prev_pc = 0
+
+patch = False
 
 while len(block_list) > 0:
     block = block_list.pop()
@@ -19,14 +22,16 @@ while len(block_list) > 0:
     else:
         continue
 
-    #print("block addr: %016x" % block["addr"])
+    print("block addr: %016x" % block["addr"])
     if "jump" not in block: continue
 
     instrs = esilsolver.r2pipe.cmdj("pdbj @ %d" % block["addr"])
     jump_addr = instrs[-1]["offset"]
     end = block["addr"] + block["size"]
-    state = esilsolver.blank_state(block["addr"])
-    state.registers["SP"] = 0x2000000 # no symbolic sp
+
+    if block["addr"] != prev_pc: # do no reinit if continuing
+        state = esilsolver.blank_state(block["addr"])
+        state.registers["SP"] = 0x2000000 # no symbolic sp
 
     try:
         state = esilsolver.run(jump_addr, avoid=[end], make_calls=False)
@@ -35,10 +40,23 @@ while len(block_list) > 0:
         if len(states) == 1: # one state = opaque predicate
             pc = states[0].registers["PC"].as_long()
             if pc == end: # jump is never taken
-                esilsolver.r2pipe.cmd("aho nop @ %d" % jump_addr)
+                if patch:
+                    esilsolver.r2pipe.cmd("wai nop @ %d" % jump_addr)
+                else:
+                    esilsolver.r2pipe.cmd("aho nop @ %d" % jump_addr)
             else: # jump is always taken
-                esilsolver.r2pipe.cmd("aho jmp @ %d" % jump_addr)
+                if patch:
+                    esilsolver.r2pipe.cmd("wai jmp 0x%x @ %d" \
+                        % (block["jump"], jump_addr))
+                else:
+                    esilsolver.r2pipe.cmd("aho jmp @ %d" % jump_addr)
 
+            esilsolver.state_manager.add(state)
+            prev_pc = pc
+        else:
+            prev_pc = 0
+
+        # add next blocks to block_list
         for state in states:
             pc = state.registers["PC"].as_long()
             if pc in block_dict:
